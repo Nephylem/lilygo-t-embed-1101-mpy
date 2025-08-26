@@ -992,3 +992,40 @@ class ST7789:
                 rotated[i][1],
                 color,
             )
+
+    def reset_write_address(self):
+        """
+        Reset the ST7789 internal write address (column and row pointer)
+        back to the top-left corner of the screen.
+
+        Why this matters:
+            The ST7789 keeps track of the "cursor" for where the next pixel
+            will be written. After a RAMWR (0x2C) command, the chip automatically
+            increments the address as you write pixel data:
+                - First across columns (left → right)
+                - Then down rows (top → bottom)
+
+            If you stop writing in the middle of a frame or want to start
+            drawing somewhere else, you must re-issue the CASET and RASET
+            commands. This resets the "write window" so the next pixel goes
+            exactly where you expect.
+
+        What this function does:
+            - Sets CASET (0x2A): column range to full screen (0 → width-1)
+            - Sets RASET (0x2B): row range to full screen (0 → height-1)
+            - Sends RAMWR (0x2C): reset the write pointer to (0,0)
+
+        After calling this, the next pixel you send will be drawn at the
+        top-left corner (0,0), and the chip will auto-increment addresses
+        again from there.
+        """
+
+        # Set column range (0 to width-1)
+        self._write(_ST7789_CASET, struct.pack(_ENCODE_POS, 0, self.width - 1))
+
+        # Set row range (0 to height-1)
+        self._write(_ST7789_RASET, struct.pack(_ENCODE_POS, 0, self.height - 1))
+
+        # Issue RAMWR to reset internal pointer back to (0,0)
+        self._write(_ST7789_RAMWR)
+
