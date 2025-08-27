@@ -93,8 +93,7 @@ class RotaryEncoder:
         self.pin_a.irq(
             trigger=Pin.IRQ_RISING | Pin.IRQ_FALLING, handler=self.encoder_handler
         )
-        # self.pin_b.irq(trigger=Pin.IRQ_RISING | Pin.IRQ_FALLING, handler=self.encoder_handler)
-
+        
         self.pin_button.irq(trigger=Pin.IRQ_FALLING, handler=self.button_handler)
 
     def encoder_handler(self, pin):
@@ -138,7 +137,6 @@ class RotaryEncoder:
 
                 self.last_a_state = a_state
 
-            print(f"Rotary Counter: {self.counter}")
 
     def button_handler(self, pin):
         """
@@ -210,72 +208,76 @@ class ButtonManager:
             "power": pwr_button,  # Power control button
         }
 
-        # Initialize state tracking dictionaries
-        self.button_states = {name: False for name in self.buttons}  # Pressed states
-        self.button_press_times = {name: 0 for name in self.buttons}  # Press timestamps
-        self.long_press_duration = 1000  # 1 second threshold for long press
-
-        # Set up interrupt handlers for all buttons
+        self.long_press_time = 2000 # ms
+        self.press_events = []  # Stores raw press events for processing
+        self.time_counter = 0 # time based counter
+                
+        # Setup hardware interrupts for all buttons
         for name, button in self.buttons.items():
+            # Configure interrupt to trigger on both press and release
+            # Pin.IRQ_FALLING: Trigger when button is pressed (HIGH → LOW)
+            # Pin.IRQ_RISING: Trigger when button is released (LOW → HIGH)
             button.irq(
-                trigger=Pin.IRQ_FALLING,
-                handler=lambda p, b=name: self._button_handler(b),
+                trigger=Pin.IRQ_FALLING | Pin.IRQ_RISING, 
+                handler=lambda p, n=name: self._button_handler(p, n)
             )
-
-    def _button_handler(self, button_name):
+            
+    def _button_handler(self, pin, name):
         """
-        Internal interrupt handler for button presses.
-
+        Interrupt Service Routine (ISR) - Called automatically on button state changes.
+        This function must be fast and non-blocking.
+        
         Args:
-            button_name (str): Name of the button that was pressed
+            pin: The pin object that triggered the interrupt
+            name: The name of the button from the buttons dictionary
         """
-        current_time = time.ticks_ms()
-        self.button_states[button_name] = True  # Mark button as pressed
-        self.button_press_times[button_name] = current_time  # Record press time
+        current_state = pin.value()
+        start_time_ms = time.ticks_ms()
+        if current_state == 0:  # Falling edge - button pressed
+            # Record press start time with millisecond precision
+            if len(self.press_events) >= 5: # check list length
+                self.press_events = self.press_events[1:5]
+            self.press_events.insert(0, ('press_start', name, start_time_ms))
 
-    def get_button_press(self, button_name):
+        else:  # Rising edge - button released
+            # Find the matching press_start event for this button
+            # Calculate press duration  
+            for i, (event_type, btn_name, timestamp) in enumerate(self.press_events):
+                if event_type == 'press_start' and btn_name == name:
+                    end_time_ms = time.ticks_ms()
+                    duration = time.ticks_diff(end_time_ms, timestamp)
+                    # Record press end with duration
+                    self.press_events.insert(0, ('press_end', name, duration))
+                    break  # Only process the most recent press start
+        
+    def get_events(self):
         """
-        Check if a specific button was pressed and return press type.
-
-        Args:
-            button_name (str): Name of the button to check
-
+        Process accumulated button events and return completed press actions.
+        This should be called regularly from the main program loop.
+        
         Returns:
-            str or None: 'short' for short press, 'long' for long press,
-                         None if no press detected
+            list: List of tuples containing completed button events
+            Format: [(event_type, button_name, duration_ms), ...]
+            Event types: 'short_press' or 'long_press'
         """
-        if self.button_states.get(button_name, False):
-            current_time = time.ticks_ms()
-            # Calculate how long the button was held down
-            press_duration = time.ticks_diff(
-                current_time, self.button_press_times[button_name]
-            )
-
-            self.button_states[button_name] = False  # Reset button state
-
-            # Determine press type based on duration
-            if press_duration > self.long_press_duration:
-                return "long"  # Long press
+        events = []  # Completed events to return
+        new_events = []  # Ongoing events to keep for next call
+        
+        # Process all accumulated events
+        for event in self.press_events:
+            if event[0] == 'press_end':
+                # This is a completed press event
+                event_type = 'long_press' if event[2] >= self.long_press_time else 'short_press'
+                events.append((event_type, event[1], event[2]))
             else:
-                return "short"  # Short press
-        return None  # No press detected
+                # This is an ongoing press, keep it for future processing
+                new_events.append(event)
+        
+        # Update the events list, keeping only ongoing presses
+        self.press_events = new_events
+        return events
 
-    def check_all_buttons(self):
-        """
-        Check all buttons for press events.
-
-        Returns:
-            dict: Dictionary mapping button names to press types
-                  Example: {'encoder': 'short', 'power': 'long'}
-        """
-        pressed_buttons = {}
-        for name in self.buttons:
-            press_type = self.get_button_press(name)
-            if press_type:
-                pressed_buttons[name] = press_type
-        return pressed_buttons
-
-
+ 
 # =============================================================================
 # ADVANCED BUTTON MANAGER CLASS
 # =============================================================================
@@ -373,10 +375,21 @@ class AdvancedButtonManager:
                 self.button_callbacks["encoder"][
                     "short"
                 ]()  # Call encoder button callback
-
+ 
         # Handle other buttons
-        pressed = self.button_manager.check_all_buttons()
-        for button, press_type in pressed.items():
-            callback = self.button_callbacks.get(button, {}).get(press_type)
-            if callback:
-                callback()  # Execute the registered callback
+        events = self.button_manager.get_events()
+        for event_type, button_name, duration in events: 
+            print(f"{event_type:12} on {button_name:8}: {duration:4}ms")
+            if event_type == "long_press": 
+                long_press_callback = self.button_callbacks[button_name]["long"]
+                if long_press_callback: 
+                    long_press_callback()
+            elif event_type == "short_press":
+                short_press_callback = self.button_callbacks[button_name]["short"]
+                if short_press_callback: 
+                    short_press_callback()
+            
+             
+
+      
+            
