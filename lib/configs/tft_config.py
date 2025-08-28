@@ -21,7 +21,7 @@ FEATHERS = 1    # orientation for feathers.py
 
 POWER = Pin(46, Pin.OUT, value=1)
 
-def config(rotation=0):
+def config(rotation=0) -> st7789.ST7789:
     """
     Configures and returns an instance of the ST7789 display driver.
 
